@@ -1,0 +1,46 @@
+name: Update Schedule Pipeline
+
+on:
+  schedule:
+    # Запуск по будням (Пн-Пт) каждые 2 часа с 06:00 до 18:00 UTC
+    - cron: '0 6,8,10,12,14,16,18 * * 1-5'
+  workflow_dispatch: # Позволяет запускать вручную кнопкой в GitHub
+
+jobs:
+  run-pipeline:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: |
+          pip install -r requirements.txt
+
+      - name: Download schedule from VK
+        env:
+          VK_SERVICE_TOKEN: ${{ secrets.VK_SERVICE_TOKEN }}
+        run: |
+          python vk_downloader.py
+
+      - name: Parse Schedule PDF
+        run: |
+          # Запуск парсера по всем скачанным файлам в папке downloads
+          python parse_schedule.py --input-dir ./downloads --output schedule.json
+
+      - name: Push schedule to Cloudflare KV
+        env:
+          WORKER_URL: ${{ secrets.CF_WORKER_URL }}
+          API_SECRET: ${{ secrets.CF_API_SECRET }}
+        run: |
+          curl -X POST "$WORKER_URL" \
+            -H "Authorization: Bearer $API_SECRET" \
+            -H "Content-Type: application/json" \
+            --data-binary @schedule.json
