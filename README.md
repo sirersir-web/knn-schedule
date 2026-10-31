@@ -140,8 +140,74 @@ for day in all_schedules:
 
 ## Запуск тестов
 
-Для проверки работоспособности парсера включен набор автоматических тестов `test_schedule_parser.py`:
+Для проверки работоспособности парсера и загрузчика включены наборы автоматических тестов:
 
 ```bash
+# Тесты парсера расписания
 python3 test_schedule_parser.py
+
+# Тесты модуля загрузки из ВК
+python3 test_vk_downloader.py
 ```
+
+---
+
+## Автоматическая загрузка расписания из ВК (`vk_downloader.py`)
+
+Модуль `vk_downloader.py` позволяет автоматически скачивать свежие PDF-файлы расписания со стены сообщества ВКонтакте, избегая повторных загрузок с помощью файла состояния `.last_vk_doc.json`.
+
+### Параметры конфигурации:
+Поддерживаются как переменные окружения, так и флаги CLI:
+
+| Переменная окружения | Флаг CLI | Описание | По умолчанию |
+|---|---|---|---|
+| `VK_SERVICE_TOKEN` | `-t`, `--token` | Сервисный ключ доступа VK API | *Обязательно* |
+| `VK_GROUP_ID` | `-g`, `--group-id` | ID сообщества (числовой, например `12345` или `club12345`) | - |
+| `VK_DOMAIN` | `-d`, `--domain` | Короткое имя / домен сообщества (например `my_college`) | - |
+| `TARGET_KEYWORDS` | `-k`, `--keywords` | Ключевые слова для фильтрации названий файлов (через запятую) | - |
+| `TARGET_REGEX` | `-r`, `--regex` | Регулярное выражение для фильтрации названий файлов | - |
+| `OUTPUT_DIR` | `-o`, `--output-dir` | Папка для сохранения скачанных PDF | `./downloads` |
+| `STATE_FILE` | `-s`, `--state-file` | Путь к файлу состояния обработанных документов | `.last_vk_doc.json` |
+| `VK_COUNT` | `-c`, `--count` | Количество проверяемых постов на стене | `20` |
+| - | `-f`, `--force` | Принудительная повторная загрузка (игнорировать state) | `False` |
+| - | `-q`, `--quiet` | Тихий режим (только путь к файлу в stdout) | `False` |
+
+### Примеры использования CLI:
+
+```bash
+# С использованием флагов:
+python3 vk_downloader.py \
+  --token "vk1.a..." \
+  --group-id "123456" \
+  --keywords "расписание" "3-4 курс" \
+  --output-dir "./downloads"
+
+# С использованием переменных окружения:
+export VK_SERVICE_TOKEN="vk1.a..."
+export VK_GROUP_ID="123456"
+export TARGET_KEYWORDS="расписание, 3-4 курс"
+python3 vk_downloader.py
+
+# Связка загрузки и последующего парсинга в одной команде:
+python3 parse_schedule.py $(python3 vk_downloader.py) --group 3421 -o output.json
+```
+
+### Использование в Python коде:
+
+```python
+from vk_downloader import fetch_schedule
+from parse_schedule import parse_schedule_pdf
+
+# Скачивание актуального PDF (или получение пути к уже загруженному)
+pdf_path = fetch_schedule(
+    token="vk1.a...",
+    group_id="123456",
+    keywords=["расписание", "3-4 курс"],
+    output_dir="./downloads"
+)
+
+# Парсинг расписания для конкретной группы
+schedule_data = parse_schedule_pdf(pdf_path, group="3421")
+print(f"Дата: {schedule_data['date']}, Занятий: {len(schedule_data['lessons'])}")
+```
+
