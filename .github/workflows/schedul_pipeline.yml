@@ -33,7 +33,7 @@ jobs:
       - name: Parse Schedule PDF
         run: |
           # Запуск парсера по всем скачанным файлам в папке downloads
-          python parse_schedule.py --input-dir ./downloads --output schedule.json
+          python parse_schedule.py downloads/ -o schedule.json
 
       - name: Push schedule to Cloudflare KV
         env:
