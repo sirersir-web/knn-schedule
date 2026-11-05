@@ -17,6 +17,7 @@ from parse_schedule import (
     parse_multiple_pdfs,
     extract_date_from_text,
     extract_group_from_text,
+    extract_week_from_text,
     parse_cell_lesson,
     format_time_interval,
 )
@@ -188,6 +189,15 @@ class TestScheduleParser(unittest.TestCase):
         self.assertEqual(extract_group_from_text("Гр. 3421"), "3421")
         self.assertEqual(extract_group_from_text("3421 группа"), "3421")
 
+    def test_extract_week(self):
+        self.assertEqual(extract_week_from_text("I неделя"), 1)
+        self.assertEqual(extract_week_from_text("II неделя"), 2)
+        self.assertEqual(extract_week_from_text("1 неделя"), 1)
+        self.assertEqual(extract_week_from_text("2-я неделя"), 2)
+        self.assertEqual(extract_week_from_text("Расписание на 19.10.2026 (понедельник)\nI неделя"), 1)
+        self.assertEqual(extract_week_from_text("Расписание на 06.10.2026 (вторник)\nII неделя"), 2)
+        self.assertIsNone(extract_week_from_text("Просто текст без номера недели"))
+
     def test_parse_cell_lesson(self):
         res = parse_cell_lesson("Информатика\nИванов И.И.\nкаб. 204")
         self.assertEqual(len(res), 1)
@@ -207,6 +217,7 @@ class TestScheduleParser(unittest.TestCase):
         data = parse_schedule_pdf(self.col_pdf, group="3421")
         self.assertEqual(data["group"], "3421")
         self.assertEqual(data["date"], "2026-10-30")
+        self.assertIn("week", data)
         self.assertIn("parsed at", data)
 
         lessons = data["lessons"]
@@ -257,7 +268,7 @@ class TestScheduleParser(unittest.TestCase):
         self.assertEqual(len(data["lessons"]), 1)
 
         l1 = data["lessons"][0]
-        self.assertEqual(l1["num"], 0)
+        self.assertEqual(l1["num"], 1)
         self.assertEqual(l1["time"], "08:00 - 09:10")
         self.assertEqual(l1["subject"], "МДК 02.01 Техн. разраб. ПО")
         self.assertEqual(l1["teacher"], "Гусманова Р.Н.")
@@ -287,6 +298,24 @@ class TestScheduleParser(unittest.TestCase):
             self.assertEqual(item["group"], "3421")
             self.assertIn("date", item)
             self.assertIn("lessons", item)
+
+    def test_sequential_lesson_numeration(self):
+        # Verify that parsing a schedule where classes start later (e.g. period 2) renumbers the first class to 1
+        history_file = "history/Расписание 3.4 курс на 01.10.2026-1.pdf"
+        if os.path.exists(history_file):
+            data = parse_schedule_pdf(history_file, group="3652к")
+            self.assertGreater(len(data["lessons"]), 0)
+            self.assertEqual(data["week"], 1)
+            self.assertEqual(data["lessons"][0]["num"], 1)
+            self.assertEqual([l["num"] for l in data["lessons"]], list(range(1, len(data["lessons"]) + 1)))
+
+        # Verify that 8:00 early class (previously 0) is now numbered 1
+        history_early = "history/Расписание 3.4 курс на 05.09.2026-2.pdf"
+        if os.path.exists(history_early):
+            data_early = parse_schedule_pdf(history_early, group="3421")
+            self.assertGreater(len(data_early["lessons"]), 0)
+            self.assertEqual(data_early["week"], 1)
+            self.assertEqual(data_early["lessons"][0]["num"], 1)
 
     def test_cli_execution(self):
         out_file = "output_test.json"

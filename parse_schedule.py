@@ -45,10 +45,13 @@ RUSSIAN_MONTHS = {
     "декабря": 12, "декабрь": 12,
 }
 
+
+
 ROMAN_NUMERALS = {
     "I": 1, "II": 2, "III": 3, "IV": 4, "V": 5,
     "VI": 6, "VII": 7, "VIII": 8, "IX": 9, "X": 10
 }
+
 
 TEACHER_RE = re.compile(
     r"(?:[А-ЯЁ][а-яё]+(?:-[А-ЯЁ][а-яё]+)?\s+[А-ЯЁ]\.\s*[А-ЯЁ]\.?|"
@@ -114,6 +117,36 @@ def extract_group_from_text(text: str) -> Optional[str]:
     m = re.search(r"(?i)\b([0-9a-zA-Zа-яА-Я\-]*\d+[0-9a-zA-Zа-яА-Я\-]*)\s*(?:групп[аыеу]?|group)\b", text)
     if m:
         return m.group(1).strip()
+
+    return None
+
+
+def extract_week_from_text(text: str) -> Optional[int]:
+    """
+    Extract schedule week number from header/text.
+    Supports 'I неделя', 'II неделя', '1 неделя', '2 неделя', etc.
+    Returns 1, 2, ... or None.
+    """
+    if not text:
+        return None
+
+    # Matches 'I неделя', 'II неделя', '1 неделя', '1-я неделя', '1 нед.'
+    m = re.search(r"(?i)\b([IVX]+|\d+)\s*(?:[-–—]\s*(?:я|ая|ей|ю)\s*)?недел[яеию]?\b", text)
+    if m:
+        val = m.group(1).upper()
+        if val in ROMAN_NUMERALS:
+            return ROMAN_NUMERALS[val]
+        if val.isdigit():
+            return int(val)
+
+    # Matches 'неделя 1', 'неделя: II', 'week 1', etc.
+    m = re.search(r"(?i)\b(?:недел[яеию]?|week)\s*[:№\-]?\s*([IVX]+|\d+)\b", text)
+    if m:
+        val = m.group(1).upper()
+        if val in ROMAN_NUMERALS:
+            return ROMAN_NUMERALS[val]
+        if val.isdigit():
+            return int(val)
 
     return None
 
@@ -348,6 +381,7 @@ def parse_schedule_pdf(
     pdf_path: str,
     group: Optional[str] = None,
     date: Optional[str] = None,
+    week: Optional[int] = None,
     include_empty: bool = False
 ) -> Dict[str, Any]:
     """
@@ -355,6 +389,7 @@ def parse_schedule_pdf(
     {
       "group": "...",
       "date": "...",
+      "week": 1,
       "parsed at": "...",
       "lessons": [
         {
@@ -372,6 +407,7 @@ def parse_schedule_pdf(
 
     parsed_at = datetime.now().astimezone().isoformat()
     detected_date = date
+    detected_week = week
     target_group = group
     lessons: List[Dict[str, Any]] = []
 
@@ -382,6 +418,9 @@ def parse_schedule_pdf(
             detected_date = extract_date_from_text(full_text, os.path.basename(pdf_path))
             if not detected_date:
                 detected_date = datetime.now().strftime("%Y-%m-%d")
+
+        if detected_week is None:
+            detected_week = extract_week_from_text(full_text)
 
         all_blocks = []
         for p_idx, page in enumerate(pdf.pages):
@@ -523,9 +562,22 @@ def parse_schedule_pdf(
         # Ensure lessons are sorted chronologically by lesson number (period 0 first)
         lessons.sort(key=lambda x: x["num"])
 
+        # Re-number lessons sequentially starting from 1 for the group's first lesson,
+        # regardless of time or row in PDF, while preserving identical numbers for subgroups in the same slot.
+        if lessons:
+            unique_nums = []
+            for l in lessons:
+                if l["num"] not in unique_nums:
+                    unique_nums.append(l["num"])
+
+            num_map = {orig: idx + 1 for idx, orig in enumerate(unique_nums)}
+            for l in lessons:
+                l["num"] = num_map[l["num"]]
+
     return {
         "group": target_group or "Unknown",
         "date": detected_date,
+        "week": detected_week,
         "parsed at": parsed_at,
         "lessons": lessons
     }
@@ -658,6 +710,7 @@ def parse_multiple_pdfs(
     pdf_paths: List[str],
     group: Optional[str] = None,
     date: Optional[str] = None,
+    week: Optional[int] = None,
     include_empty: bool = False,
     all_groups: bool = False
 ) -> List[Any]:
@@ -668,10 +721,10 @@ def parse_multiple_pdfs(
     for path in pdf_paths:
         try:
             if all_groups:
-                data = parse_all_groups_from_pdf(path, date=date)
+                data = parse_all_groups_from_pdf(path, date=date, week=week)
                 combined_results.append({"file": os.path.basename(path), "groups": data})
             else:
-                data = parse_schedule_pdf(path, group=group, date=date, include_empty=include_empty)
+                data = parse_schedule_pdf(path, group=group, date=date, week=week, include_empty=include_empty)
                 combined_results.append(data)
         except Exception as e:
             print(f"Warning: Failed to parse {path}: {e}", file=sys.stderr)
@@ -685,7 +738,8 @@ def parse_multiple_pdfs(
 
 def parse_all_groups_from_pdf(
     pdf_path: str,
-    date: Optional[str] = None
+    date: Optional[str] = None,
+    week: Optional[int] = None
 ) -> Dict[str, Dict[str, Any]]:
     """
     Discover all groups present in the PDF and parse schedule for each group.
@@ -709,12 +763,12 @@ def parse_all_groups_from_pdf(
                             discovered_groups.append(g)
 
     if not discovered_groups:
-        single_res = parse_schedule_pdf(pdf_path, date=date)
+        single_res = parse_schedule_pdf(pdf_path, date=date, week=week)
         return {single_res["group"]: single_res}
 
     results = {}
     for grp in discovered_groups:
-        res = parse_schedule_pdf(pdf_path, group=grp, date=date)
+        res = parse_schedule_pdf(pdf_path, group=grp, date=date, week=week)
         if res["lessons"]:
             results[grp] = res
 
@@ -732,6 +786,7 @@ def main():
     )
     parser.add_argument("-g", "--group", help="Target group name/number (e.g. '3421')")
     parser.add_argument("-d", "--date", help="Override schedule date (e.g. '2026-10-31')")
+    parser.add_argument("-w", "--week", type=int, help="Override schedule week number (e.g. 1 or 2)")
     parser.add_argument("-o", "--output", help="Save combined output to JSON file (default: stdout)")
     parser.add_argument(
         "--out-dir",
@@ -757,12 +812,13 @@ def main():
             for pdf_path in pdf_files:
                 base_name = os.path.splitext(os.path.basename(pdf_path))[0]
                 if args.all_groups:
-                    data = parse_all_groups_from_pdf(pdf_path, date=args.date)
+                    data = parse_all_groups_from_pdf(pdf_path, date=args.date, week=args.week)
                 else:
                     data = parse_schedule_pdf(
                         pdf_path,
                         group=args.group,
                         date=args.date,
+                        week=args.week,
                         include_empty=args.include_empty
                     )
 
@@ -780,12 +836,13 @@ def main():
         if len(pdf_files) == 1:
             pdf_path = pdf_files[0]
             if args.all_groups:
-                data = parse_all_groups_from_pdf(pdf_path, date=args.date)
+                data = parse_all_groups_from_pdf(pdf_path, date=args.date, week=args.week)
             else:
                 data = parse_schedule_pdf(
                     pdf_path,
                     group=args.group,
                     date=args.date,
+                    week=args.week,
                     include_empty=args.include_empty
                 )
         # Mode C: Multiple PDF files -> combined list of JSON objects
@@ -794,6 +851,7 @@ def main():
                 pdf_files,
                 group=args.group,
                 date=args.date,
+                week=args.week,
                 include_empty=args.include_empty,
                 all_groups=args.all_groups
             )
