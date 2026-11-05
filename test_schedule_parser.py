@@ -317,6 +317,21 @@ class TestScheduleParser(unittest.TestCase):
             self.assertEqual(data_early["week"], 1)
             self.assertEqual(data_early["lessons"][0]["num"], 1)
 
+    def test_retention_and_deduplication(self):
+        # 1. Deduplication: two files with the same date and group reduce to 1
+        files = [self.col_pdf, self.row_pdf]
+        dedup_results = parse_multiple_pdfs(files, group="3421", deduplicate=True)
+        self.assertEqual(len(dedup_results), 1)
+
+        # 2. Retention: old file beyond retention_days is dropped
+        # 2026-10-30 is > 1 day in the past relative to today (2026-11-05)
+        retained = parse_multiple_pdfs(files, group="3421", retention_days=1)
+        self.assertEqual(len(retained), 0)
+
+        # But within 30 days retention it is kept
+        retained_kept = parse_multiple_pdfs(files, group="3421", retention_days=30)
+        self.assertEqual(len(retained_kept), 2)
+
     def test_cli_execution(self):
         out_file = "output_test.json"
         cmd = [

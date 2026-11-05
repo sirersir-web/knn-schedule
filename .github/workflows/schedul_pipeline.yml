@@ -17,6 +17,8 @@ on:
 jobs:
   run-pipeline:
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
 
     steps:
       - name: Check out repository
@@ -40,8 +42,8 @@ jobs:
 
       - name: Parse Schedule PDF
         run: |
-          # Запуск парсера по всем скачанным файлам в папке downloads
-          python parse_schedule.py downloads/ -o schedule.json
+          # Автоматически сохраняем расписания за последние 10 дней, удаляем дубликаты и старые файлы (> 10 дней)
+          python parse_schedule.py downloads/ -o schedule.json --retention-days 10 --clean-files --as-list
 
       - name: Push schedule to Cloudflare KV
         env:
@@ -52,3 +54,10 @@ jobs:
             -H "Authorization: Bearer $API_SECRET" \
             -H "Content-Type: application/json" \
             --data-binary @schedule.json
+
+      - name: Commit and push updated downloads
+        run: |
+          git config --local user.email "action@github.com"
+          git config --local user.name "GitHub Action"
+          git add downloads/
+          git diff --quiet && git diff --staged --quiet || (git commit -m "Auto-update schedule (retain last 10 days) [skip ci]" && git push)

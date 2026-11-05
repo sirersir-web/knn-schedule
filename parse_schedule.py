@@ -712,23 +712,58 @@ def parse_multiple_pdfs(
     date: Optional[str] = None,
     week: Optional[int] = None,
     include_empty: bool = False,
-    all_groups: bool = False
+    all_groups: bool = False,
+    retention_days: Optional[int] = None,
+    clean_files: bool = False,
+    deduplicate: bool = False,
 ) -> List[Any]:
     """
     Parse multiple PDF schedule files and return combined results sorted by date.
+    - If retention_days is set: automatically discards schedules older than retention_days.
+    - If clean_files is True: automatically deletes old PDF files from disk.
+    - If deduplicate is True: updated schedule replaces older one for the same date and group.
     """
-    combined_results = []
+    results_map: Dict[Any, Any] = {}
+    results_list: List[Any] = []
+    today = datetime.now().date()
+
     for path in pdf_paths:
         try:
             if all_groups:
                 data = parse_all_groups_from_pdf(path, date=date, week=week)
-                combined_results.append({"file": os.path.basename(path), "groups": data})
+                first_g = next(iter(data.values()), None) if data else None
+                s_date_str = first_g.get("date") if first_g else None
             else:
                 data = parse_schedule_pdf(path, group=group, date=date, week=week, include_empty=include_empty)
-                combined_results.append(data)
+                s_date_str = data.get("date")
+
+            # Check retention limit (keep last N days and future dates)
+            if retention_days is not None and s_date_str:
+                try:
+                    s_dt = datetime.strptime(s_date_str, "%Y-%m-%d").date()
+                    if (today - s_dt).days > retention_days:
+                        if clean_files and os.path.exists(path):
+                            try:
+                                os.remove(path)
+                                print(f"Deleted old schedule file (> {retention_days} days): {path}", file=sys.stderr)
+                            except OSError as err:
+                                print(f"Warning: Failed to delete {path}: {err}", file=sys.stderr)
+                        continue  # Skip old schedule from results
+                except ValueError:
+                    pass
+
+            entry = {"file": os.path.basename(path), "groups": data} if all_groups else data
+
+            if deduplicate and not all_groups:
+                key = (data.get("date"), data.get("group"))
+                results_map[key] = entry
+            else:
+                results_list.append(entry)
+
         except Exception as e:
             print(f"Warning: Failed to parse {path}: {e}", file=sys.stderr)
 
+    combined_results = list(results_map.values()) if (deduplicate and not all_groups) else results_list
     if not all_groups:
         # Sort schedules by date (earliest to latest)
         combined_results.sort(key=lambda x: x.get("date", ""))
@@ -795,6 +830,27 @@ def main():
     parser.add_argument("--indent", type=int, default=2, help="JSON indentation level (default: 2)")
     parser.add_argument("--all-groups", action="store_true", help="Extract all detected groups")
     parser.add_argument("--include-empty", action="store_true", help="Include empty pairs/windows")
+    parser.add_argument(
+        "--retention-days",
+        type=int,
+        default=None,
+        help="Keep schedules within the last N days (and future dates). Older schedules are dropped (e.g. 10)."
+    )
+    parser.add_argument(
+        "--clean-files",
+        action="store_true",
+        help="Automatically delete PDF files older than retention-days from disk."
+    )
+    parser.add_argument(
+        "--as-list",
+        action="store_true",
+        help="Always output a JSON array even when only one schedule is parsed."
+    )
+    parser.add_argument(
+        "--deduplicate",
+        action="store_true",
+        help="Deduplicate schedules by date and group, keeping only the newest update."
+    )
 
     args = parser.parse_args()
 
@@ -832,8 +888,8 @@ def main():
             print(f"Successfully processed {saved_count} PDF file(s) into {args.out_dir}")
             return
 
-        # Mode B: Single PDF file input -> single JSON object / result
-        if len(pdf_files) == 1:
+        # Mode B: Single PDF file input without list/retention requested -> single JSON object / result
+        if len(pdf_files) == 1 and not args.as_list and args.retention_days is None:
             pdf_path = pdf_files[0]
             if args.all_groups:
                 data = parse_all_groups_from_pdf(pdf_path, date=args.date, week=args.week)
@@ -845,15 +901,19 @@ def main():
                     week=args.week,
                     include_empty=args.include_empty
                 )
-        # Mode C: Multiple PDF files -> combined list of JSON objects
+        # Mode C: Multiple PDF files, or retention filtering, or --as-list requested -> combined list
         else:
+            dedup = args.deduplicate or (args.retention_days is not None)
             data = parse_multiple_pdfs(
                 pdf_files,
                 group=args.group,
                 date=args.date,
                 week=args.week,
                 include_empty=args.include_empty,
-                all_groups=args.all_groups
+                all_groups=args.all_groups,
+                retention_days=args.retention_days,
+                clean_files=args.clean_files,
+                deduplicate=dedup,
             )
 
         json_output = json.dumps(data, ensure_ascii=False, indent=args.indent)
