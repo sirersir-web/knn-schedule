@@ -8,6 +8,7 @@ import json
 import os
 import shutil
 import tempfile
+import time
 import unittest
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -469,6 +470,149 @@ class TestCLIAndMain(unittest.TestCase):
             count=20,
             force=False,
         )
+
+    @patch("vk_downloader.VKDownloader.fetch_all_schedules")
+    def test_main_with_days_arg(self, mock_fetch_all):
+        p1 = Path("/tmp/s1.pdf")
+        p2 = Path("/tmp/s2.pdf")
+        mock_fetch_all.return_value = [p1, p2]
+
+        stdout_buf = io.StringIO()
+        with patch("sys.stdout", stdout_buf):
+            code = main([
+                "--token", "tok",
+                "--domain", "nk_knn",
+                "-r", "3.4 курс",
+                "--days", "10",
+            ])
+
+        self.assertEqual(code, 0)
+        lines = stdout_buf.getvalue().strip().splitlines()
+        self.assertEqual(lines, [str(p1), str(p2)])
+        mock_fetch_all.assert_called_once_with(
+            keywords=[],
+            regex_pattern="3.4 курс",
+            output_dir="./downloads",
+            days=10,
+            count=50,
+            force=False,
+        )
+
+
+class TestFindAndFetchAllSchedules(unittest.TestCase):
+    def setUp(self):
+        self.test_dir = tempfile.mkdtemp()
+        self.dl = VKDownloader(token="tok", group_id=123)
+
+    def tearDown(self):
+        shutil.rmtree(self.test_dir, ignore_errors=True)
+
+    def test_find_all_schedule_docs_filters_days(self):
+        now_ts = int(time.time())
+        day_secs = 86400
+
+        posts = [
+            {
+                "id": 1,
+                "date": now_ts - 2 * day_secs,  # 2 days ago (within 10 days)
+                "attachments": [
+                    {"type": "doc", "doc": {"id": 101, "owner_id": 123, "title": "Расписание 3.4 курс на 03.11.2026.pdf", "ext": "pdf"}}
+                ]
+            },
+            {
+                "id": 2,
+                "date": now_ts - 15 * day_secs,  # 15 days ago (older than 10 days)
+                "attachments": [
+                    {"type": "doc", "doc": {"id": 102, "owner_id": 123, "title": "Расписание 3.4 курс на 20.10.2026.pdf", "ext": "pdf"}}
+                ]
+            },
+            {
+                "id": 3,
+                "date": now_ts - 5 * day_secs,  # 5 days ago (within 10 days)
+                "attachments": [
+                    {"type": "doc", "doc": {"id": 103, "owner_id": 123, "title": "Расписание 3.4 курс на 30.10.2026.pdf", "ext": "pdf"}}
+                ]
+            },
+        ]
+
+        # Filter with days=10
+        docs_10 = self.dl.find_all_schedule_docs(posts, regex_pattern="3.4 курс", days=10)
+        self.assertEqual(len(docs_10), 2)
+        doc_ids = [d["doc"]["id"] for d in docs_10]
+        self.assertIn(101, doc_ids)
+        self.assertIn(103, doc_ids)
+        self.assertNotIn(102, doc_ids)
+
+    @patch("requests.Session.get")
+    def test_fetch_all_schedules_downloads_only_missing(self, mock_get):
+        now_ts = int(time.time())
+        fake_posts = [
+            {
+                "id": 1,
+                "date": now_ts - 3600,
+                "attachments": [
+                    {
+                        "type": "doc",
+                        "doc": {
+                            "id": 201,
+                            "owner_id": 123,
+                            "title": "schedule_day1.pdf",
+                            "ext": "pdf",
+                            "url": "https://vk.com/doc1.pdf",
+                            "size": 15,
+                        }
+                    },
+                    {
+                        "type": "doc",
+                        "doc": {
+                            "id": 202,
+                            "owner_id": 123,
+                            "title": "schedule_day2.pdf",
+                            "ext": "pdf",
+                            "url": "https://vk.com/doc2.pdf",
+                            "size": 25,
+                        }
+                    }
+                ]
+            }
+        ]
+
+        def mock_get_handler(url, *args, **kwargs):
+            mock = MagicMock()
+            if "wall.get" in url:
+                mock.json.return_value = {"response": {"items": fake_posts}}
+                mock.raise_for_status = MagicMock()
+                return mock
+            elif "doc2.pdf" in url:
+                mock.raise_for_status = MagicMock()
+                mock.iter_content.return_value = [b"B" * 25]
+                mock.__enter__.return_value = mock
+                mock.__exit__.return_value = False
+                return mock
+            raise ValueError(f"Unexpected url: {url}")
+
+        mock_get.side_effect = mock_get_handler
+
+        out_dir = Path(self.test_dir) / "downloads"
+        out_dir.mkdir(parents=True, exist_ok=True)
+
+        # Pre-create day1 so it already exists with matching size
+        existing_file = out_dir / "schedule_day1.pdf"
+        existing_file.write_bytes(b"A" * 15)
+
+        results = self.dl.fetch_all_schedules(
+            keywords=["schedule"],
+            output_dir=out_dir,
+            days=10,
+        )
+
+        self.assertEqual(len(results), 2)
+        self.assertTrue((out_dir / "schedule_day1.pdf").exists())
+        self.assertTrue((out_dir / "schedule_day2.pdf").exists())
+        # Check that existing_file was not re-downloaded because size matched
+        self.assertEqual((out_dir / "schedule_day1.pdf").read_bytes(), b"A" * 15)
+        # Check that missing file was downloaded
+        self.assertEqual((out_dir / "schedule_day2.pdf").read_bytes(), b"B" * 25)
 
 
 if __name__ == "__main__":

@@ -352,6 +352,57 @@ class VKDownloader:
 
         return None
 
+    def find_all_schedule_docs(
+        self,
+        posts: List[Dict[str, Any]],
+        keywords: Optional[List[str]] = None,
+        regex_pattern: Optional[Union[str, re.Pattern]] = None,
+        days: Optional[int] = None,
+    ) -> List[Dict[str, Any]]:
+        """
+        Scan wall posts for attachments of type 'doc' with .pdf extension
+        matching the keywords or regex pattern.
+        If days is provided, only includes posts from the last `days` days.
+        Returns a list of dicts: [{'doc': doc, 'post': post}, ...]
+        """
+        now = datetime.now(timezone.utc)
+        matches = []
+        seen_doc_ids = set()
+
+        for post in posts:
+            post_time = post.get("date")
+            if days is not None and post_time:
+                post_dt = datetime.fromtimestamp(post_time, tz=timezone.utc)
+                if (now - post_dt).days > days:
+                    continue
+
+            attachments = list(post.get("attachments", []))
+            for repost in post.get("copy_history", []):
+                attachments.extend(repost.get("attachments", []))
+
+            for att in attachments:
+                if att.get("type") != "doc":
+                    continue
+                doc = att.get("doc")
+                if not doc or not isinstance(doc, dict):
+                    continue
+
+                ext = str(doc.get("ext", "")).lower()
+                title = str(doc.get("title", ""))
+
+                if ext != "pdf" and not title.lower().endswith(".pdf"):
+                    continue
+
+                doc_id = (doc.get("owner_id"), doc.get("id"))
+                if doc_id in seen_doc_ids:
+                    continue
+
+                if matches_keywords(title, keywords=keywords, regex_pattern=regex_pattern):
+                    seen_doc_ids.add(doc_id)
+                    matches.append({"doc": doc, "post": post})
+
+        return matches
+
     def get_doc_download_url(self, doc: Dict[str, Any]) -> str:
         """Get direct download URL for document, querying docs.getById if needed."""
         url = doc.get("url")
@@ -481,6 +532,62 @@ class VKDownloader:
 
         return saved_path, True
 
+    def fetch_all_schedules(
+        self,
+        keywords: Optional[Union[str, List[str]]] = None,
+        regex_pattern: Optional[Union[str, re.Pattern]] = None,
+        output_dir: Union[str, Path] = "./downloads",
+        days: int = 10,
+        count: int = 50,
+        force: bool = False,
+    ) -> List[Path]:
+        """
+        Fetch all matching schedule PDFs from recent wall posts within the last `days` days.
+        Automatically checks existing files in output_dir and downloads only not-yet-downloaded files.
+        Returns a list of all matching Path objects in output_dir.
+        """
+        kw_list = parse_keywords(keywords)
+        out_dir = Path(output_dir).resolve()
+        out_dir.mkdir(parents=True, exist_ok=True)
+
+        logger.debug(f"Fetching latest {count} posts from VK wall for last {days} days...")
+        posts = self.get_wall_posts(count=count, filter_type="owner")
+        if not posts:
+            posts = self.get_wall_posts(count=count, filter_type="all")
+
+        matches = self.find_all_schedule_docs(posts, keywords=kw_list, regex_pattern=regex_pattern, days=days)
+        if not matches:
+            single = self.find_schedule_doc(posts, keywords=kw_list, regex_pattern=regex_pattern)
+            if single:
+                matches = [single]
+            else:
+                raise ScheduleNotFoundError(
+                    f"No matching schedule PDF attachments found in recent posts (days={days})."
+                )
+
+        saved_paths: List[Path] = []
+
+        for item in matches:
+            doc = item["doc"]
+            doc_title = doc.get("title", "schedule.pdf")
+            filename = sanitize_filename(doc_title)
+            target_path = out_dir / filename
+
+            # Check if file is already downloaded and complete
+            doc_size = doc.get("size")
+            if not force and target_path.is_file() and (not doc_size or target_path.stat().st_size == doc_size):
+                logger.info(f"Schedule already downloaded and up to date: {target_path}")
+                saved_paths.append(target_path)
+                continue
+
+            # Download missing/updated schedule
+            logger.info(f"Downloading new schedule: '{doc_title}' -> {target_path}")
+            download_url = self.get_doc_download_url(doc)
+            saved_file, _ = self.download_file(download_url, target_path)
+            saved_paths.append(saved_file)
+
+        return saved_paths
+
 
 # ==============================================================================
 # Public Function API
@@ -587,6 +694,12 @@ def main(argv: Optional[List[str]] = None) -> int:
         help="Number of wall posts to scan (default: 20, fallback: VK_COUNT env var)",
     )
     parser.add_argument(
+        "--days",
+        type=int,
+        default=None,
+        help="Download all matching schedules posted within the last N days (default: fetch latest single schedule)",
+    )
+    parser.add_argument(
         "-f", "--force",
         action="store_true",
         help="Force re-download even if state indicates file is already up to date",
@@ -653,17 +766,30 @@ def main(argv: Optional[List[str]] = None) -> int:
             group_id=group_id,
             domain=domain,
         )
-        saved_path, _ = downloader.fetch_schedule(
-            keywords=keywords,
-            regex_pattern=regex_pattern,
-            output_dir=args.output_dir,
-            state_file=args.state_file,
-            count=args.count,
-            force=args.force,
-        )
-        # Print saved file path to stdout upon success
-        print(str(saved_path), flush=True)
-        return 0
+        if args.days is not None:
+            saved_paths = downloader.fetch_all_schedules(
+                keywords=keywords,
+                regex_pattern=regex_pattern,
+                output_dir=args.output_dir,
+                days=args.days,
+                count=max(args.count, 50),
+                force=args.force,
+            )
+            for p in saved_paths:
+                print(str(p), flush=True)
+            return 0
+        else:
+            saved_path, _ = downloader.fetch_schedule(
+                keywords=keywords,
+                regex_pattern=regex_pattern,
+                output_dir=args.output_dir,
+                state_file=args.state_file,
+                count=args.count,
+                force=args.force,
+            )
+            # Print saved file path to stdout upon success
+            print(str(saved_path), flush=True)
+            return 0
 
     except ScheduleNotFoundError as e:
         sys.stderr.write(f"Error: {e}\n")

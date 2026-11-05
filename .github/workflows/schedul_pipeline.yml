@@ -38,7 +38,7 @@ jobs:
         env:
           VK_SERVICE_TOKEN: ${{ secrets.VK_SERVICE_TOKEN }}
         run: |
-          python vk_downloader.py -d nk_knn -r "3.4 курс"
+          python vk_downloader.py -d nk_knn -r "3.4 курс" --days 10
 
       - name: Parse Schedule PDF
         run: |

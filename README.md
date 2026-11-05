@@ -176,6 +176,7 @@ python3 test_vk_downloader.py
 | `OUTPUT_DIR` | `-o`, `--output-dir` | Папка для сохранения скачанных PDF | `./downloads` |
 | `STATE_FILE` | `-s`, `--state-file` | Путь к файлу состояния обработанных документов | `.last_vk_doc.json` |
 | `VK_COUNT` | `-c`, `--count` | Количество проверяемых постов на стене | `20` |
+| - | `--days N` | Скачать все недостающие расписания за последние N дней | - |
 | - | `-f`, `--force` | Принудительная повторная загрузка (игнорировать state) | `False` |
 | - | `-q`, `--quiet` | Тихий режим (только путь к файлу в stdout) | `False` |
 
@@ -194,6 +195,9 @@ export VK_SERVICE_TOKEN="vk1.a..."
 export VK_GROUP_ID="123456"
 export TARGET_KEYWORDS="расписание, 3-4 курс"
 python3 vk_downloader.py
+
+# Загрузка всех нескачанных расписаний за последние 10 дней:
+python3 vk_downloader.py -d nk_knn -r "3.4 курс" --days 10 -o ./downloads
 
 # Связка загрузки и последующего парсинга в одной команде:
 python3 parse_schedule.py $(python3 vk_downloader.py) --group 3421 -o output.json
