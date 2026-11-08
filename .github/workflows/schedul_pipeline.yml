@@ -2,17 +2,21 @@ name: Update Schedule Pipeline
 
 on:
   schedule:
-    # Пн-Сб: 13:30 - 13:50 МСК (10:30 - 10:50 UTC) каждые 10 минут
-    - cron: '30,40,50 10 * * 1-6'
+    # Пн-Сб: 13:30 - 13:50 МСК (10:30 - 10:50 UTC), минуты сдвинуты с «круглых»
+    - cron: '33,43,53 10 * * 1-6'
 
-    # Пн-Сб: 14:00 - 15:50 МСК (11:00 - 12:50 UTC) каждые 10 минут
-    - cron: '*/10 11-12 * * 1-6'
+    # Пн-Сб: 14:00 - 15:50 МСК (11:00 - 12:50 UTC)
+    - cron: '3,13,23,33,43,53 11-12 * * 1-6'
 
-    # Пн-Сб: 16:00 - 16:30 МСК (13:00 - 13:30 UTC) каждые 10 минут
-    - cron: '0,10,20,30 13 * * 1-6'
+    # Пн-Сб: 16:00 - 16:30 МСК (13:00 - 13:30 UTC)
+    - cron: '3,13,23,33 13 * * 1-6'
 
   workflow_dispatch:
 
+# Защита от параллельных запусков, чтобы не было конфликтов при git push
+concurrency:
+  group: update-schedule
+  cancel-in-progress: false
 
 jobs:
   run-pipeline:
@@ -50,7 +54,7 @@ jobs:
           WORKER_URL: ${{ secrets.CF_WORKER_URL }}
           API_SECRET: ${{ secrets.CF_API_SECRET }}
         run: |
-          curl -X POST "$WORKER_URL" \
+          curl --fail-with-body -X POST "$WORKER_URL" \
             -H "Authorization: Bearer $API_SECRET" \
             -H "Content-Type: application/json" \
             --data-binary @schedule.json
@@ -59,5 +63,9 @@ jobs:
         run: |
           git config --local user.email "action@github.com"
           git config --local user.name "GitHub Action"
-          git add downloads/
-          git diff --quiet && git diff --staged --quiet || (git commit -m "Auto-update schedule (retain last 10 days) [skip ci]" && git push)
+          git add -A downloads/
+          if ! git diff --staged --quiet; then
+            git commit -m "Auto-update schedule (retain last 10 days) [skip ci]"
+            git pull --rebase
+            git push
+          fi
